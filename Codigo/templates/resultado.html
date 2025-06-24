@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Resultado da Segmentação</title>
+</head>
+<body>
+    <h2>Segmentação concluída!</h2>
+    <p>Abaixo está a imagem processada:</p>
+    <img src="{{ url_for('resultados', nome_arquivo=imagem_saida) }}" alt="Segmentada" width="600">
+    <br><br>
+    <a href="/">Voltar</a>
+</body>
+</html>
+
