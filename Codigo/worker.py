@@ -1,58 +1,68 @@
 import socket
 import pickle
 import os
-from slic import aplicar_slic, salvar_segmentacao
+import io
+from PIL import Image
+from slic import aplicar_slic  # deve aceitar caminho de arquivo e retornar imagem segmentada
 
-HOST = '0.0.0.0'  # Escuta em todas as interfaces de rede
-PORT = 9001       # Porta configurável para o worker
+# Configurações do worker
+HOST = "0.0.0.0"
+PORTA = 9001
 
-def processar_imagem_serializada(pacote, pasta_saida="resultados_worker"):
-    """
-    Processa a imagem recebida via rede.
-    
-    Parâmetros:
-        pacote (dict): Contém 'nome' e 'dados' (bytes da imagem).
-        pasta_saida (str): Diretório para salvar as imagens processadas.
-    """
-    nome_arquivo = pacote['nome']
-    dados = pacote['dados']
+# Diretório onde serão salvas as imagens segmentadas
+os.makedirs("results", exist_ok=True)
 
-    # Salva temporariamente a imagem recebida
-    os.makedirs("tmp", exist_ok=True)
-    caminho_temp = os.path.join("tmp", nome_arquivo)
-    with open(caminho_temp, 'wb') as f:
-        f.write(dados)
+def processar_imagem(nome_arquivo, dados_imagem):
+    # Caminho temporário da imagem recebida
+    caminho_entrada = os.path.join("results", nome_arquivo)
 
-    # Aplica SLIC e salva resultado
-    imagem_segmentada, _ = aplicar_slic(caminho_temp)
-    caminho_final = salvar_segmentacao(imagem_segmentada, pasta_saida, os.path.splitext(nome_arquivo)[0])
-    print(f"[Worker] Imagem processada e salva em: {caminho_final}")
+    # Salva imagem temporária para ser processada
+    with open(caminho_entrada, "wb") as f:
+        f.write(dados_imagem)
+    print(f"[Worker] Imagem recebida salva em '{caminho_entrada}'")
+
+    # Aplica segmentação com base no caminho
+    try:
+        imagem_segmentada, _ = aplicar_slic(caminho_entrada)
+
+        # Gera nome de saída
+        nome_base = os.path.splitext(nome_arquivo)[0]
+        nome_saida = f"{nome_base}_segmentada.png"
+        caminho_saida = os.path.join("results", nome_saida)
+
+        # Salva imagem segmentada
+        imagem_segmentada.save(caminho_saida)
+        print(f"[Worker] Segmentação concluída e salva em '{caminho_saida}'")
+    except Exception as e:
+        print(f"[Worker] Erro ao aplicar SLIC: {e}")
 
 def iniciar_worker():
-    """
-    Inicia o servidor worker que escuta requisições do servidor central.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((HOST, PORT))
-        s.listen()
-        print(f"[Worker] Aguardando conexões em {HOST}:{PORT}...")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as worker:
+        worker.bind((HOST, PORTA))
+        worker.listen()
+        print(f"[Worker] Aguardando imagens em {HOST}:{PORTA}...")
 
         while True:
-            conn, addr = s.accept()
-            with conn:
-                print(f"[Worker] Conexão recebida de {addr}")
+            conexao, endereco = worker.accept()
+            try:
+                print(f"[Worker] Conexão recebida de {endereco}")
                 dados_recebidos = b""
                 while True:
-                    buffer = conn.recv(4096)
-                    if not buffer:
+                    parte = conexao.recv(4096)
+                    if not parte:
                         break
-                    dados_recebidos += buffer
+                    dados_recebidos += parte
 
-                try:
-                    pacote = pickle.loads(dados_recebidos)
-                    processar_imagem_serializada(pacote)
-                except Exception as e:
-                    print(f"[Worker] Erro ao processar imagem: {e}")
+                pacote = pickle.loads(dados_recebidos)
+                nome = pacote["nome"]
+                dados = pacote["dados"]
+
+                processar_imagem(nome, dados)
+
+            except Exception as e:
+                print(f"[Worker] Erro ao processar: {e}")
+            finally:
+                conexao.close()
 
 if __name__ == "__main__":
     iniciar_worker()
