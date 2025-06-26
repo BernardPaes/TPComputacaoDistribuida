@@ -1,51 +1,119 @@
-from flask import Flask, request, render_template, send_from_directory
+import os
 import socket
 import pickle
-import os
+import struct
 import time
+from flask import Flask, render_template, request, redirect, url_for, send_file
+from werkzeug.utils import secure_filename
+from datetime import datetime
+import zipfile
+import io
+
+UPLOAD_FOLDER = 'static/uploads'
+RESULT_FOLDER = 'static/results'
 
 app = Flask(__name__)
-UPLOAD_FOLDER = "results"  # Local onde workers salvam imagens segmentadas
-SERVER_IP = "127.0.0.1"
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['RESULT_FOLDER'] = RESULT_FOLDER
+
+SERVER_HOST = 'localhost'
 SERVER_PORT = 8000
 
-@app.route("/", methods=["GET"])
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULT_FOLDER, exist_ok=True)
+
+def enviar_com_cabecalho(sock, payload):
+    dados_serializados = pickle.dumps(payload)
+    tamanho = struct.pack('>I', len(dados_serializados))
+    sock.sendall(tamanho + dados_serializados)
+
+def aguardar_segmentacao(nomes, timeout=30):
+    print(f"[WebApp] Aguardando segmentações... ({len(nomes)} arquivos)")
+    inicio = time.time()
+    faltando = set(nomes)
+
+    while time.time() - inicio < timeout:
+        prontas = []
+        for nome in faltando:
+            nome_segmentado = nome.replace('.', '_final.')
+            caminho = os.path.join(app.config['RESULT_FOLDER'], nome_segmentado)
+            if os.path.exists(caminho):
+                prontas.append(nome)
+
+        for nome in prontas:
+            faltando.discard(nome)
+
+        if not faltando:
+            print("[WebApp] Todas as imagens segmentadas detectadas.")
+            return True
+
+        print(f"[WebApp] Aguardando {len(faltando)} restantes...")
+        time.sleep(0.5)
+
+    print("[WebApp] Timeout ao aguardar segmentações:", faltando)
+    return False
+
+@app.route('/')
 def index():
-    return render_template("index.html")
+    return render_template('index.html')
 
-@app.route("/upload", methods=["POST"])
+@app.route('/upload', methods=['POST'])
 def upload():
-    imagem = request.files["imagem"]
-    if not imagem:
-        return "Nenhuma imagem enviada.", 400
+    if 'imagem' not in request.files:
+        return "Nenhum arquivo enviado", 400
 
-    nome = imagem.filename
-    dados = imagem.read()
-    pacote = {"nome": nome, "dados": dados}
+    arquivos = request.files.getlist('imagem')
+    nomes_imagens = []
 
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((SERVER_IP, SERVER_PORT))
-            s.sendall(pickle.dumps(pacote))
+    for arquivo in arquivos:
+        if arquivo.filename == '':
+            continue
 
-        # Aguarda o processamento (simples delay)
-        time.sleep(2)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        nome_seguro = secure_filename(arquivo.filename)
+        nome_final = f"{timestamp}_{nome_seguro}"
+        caminho = os.path.join(app.config['UPLOAD_FOLDER'], nome_final)
+        arquivo.save(caminho)
 
-        # Caminho esperado da imagem segmentada
-        nome_saida = f"{os.path.splitext(nome)[0]}_segmentada.png"
-        caminho_saida = os.path.join(UPLOAD_FOLDER, nome_saida)
+        print(f"[WebApp] Imagem salva: {caminho}")
+        nomes_imagens.append(nome_final)
 
-        if os.path.exists(caminho_saida):
-            return render_template("resultado.html", imagem_saida=nome_saida)
-        else:
-            return "<h3>Imagem enviada, mas ainda não processada. Tente novamente em instantes.</h3>"
+        try:
+            with socket.create_connection((SERVER_HOST, SERVER_PORT), timeout=10) as s:
+                payload = {
+                    'nome': nome_final,
+                    'dados': open(caminho, 'rb').read()
+                }
+                enviar_com_cabecalho(s, payload)
+                print(f"[WebApp] Tarefa enviada para o servidor: {nome_final}")
+        except Exception as e:
+            print(f"[WebApp] Falha ao enviar tarefa ao servidor: {e}")
 
-    except Exception as e:
-        return f"<h3>Erro ao enviar: {e}</h3>"
+    # Espera o processamento antes de redirecionar
+    aguardar_segmentacao(nomes_imagens)
 
-@app.route("/resultados/<nome_arquivo>")
-def resultados(nome_arquivo):
-    return send_from_directory(UPLOAD_FOLDER, nome_arquivo)
+    return redirect(url_for('resultado', imagens=','.join(nomes_imagens)))
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+@app.route('/resultado')
+def resultado():
+    imagens_param = request.args.get('imagens', '')
+    nomes = imagens_param.split(',') if imagens_param else []
+    return render_template('resultado.html', nomes=nomes)
+
+@app.route('/download_zip', methods=['POST'])
+def download_zip():
+    nomes = request.form.getlist('nomes')
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for nome in nomes:
+            nome_segmentado = nome.replace('.', '_final.')
+            caminho = os.path.join(app.config['RESULT_FOLDER'], nome_segmentado)
+            if os.path.exists(caminho):
+                zip_file.write(caminho, arcname=nome_segmentado)
+
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name="segmentadas.zip", mimetype='application/zip')
+
+if __name__ == '__main__':
+    app.run(debug=True)

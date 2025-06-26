@@ -1,13 +1,17 @@
-def aplicar_slic(caminho_imagem):
-    from PIL import Image
-    from skimage.io import imread
-    from skimage.segmentation import slic
-    from skimage.color import label2rgb
-    import numpy as np
+import numpy as np
+from skimage.segmentation import slic
+from skimage.color import label2rgb
+from skimage.util import img_as_ubyte
 
-    imagem = imread(caminho_imagem)
-    segmentos = slic(imagem, n_segments=250, compactness=10, start_label=1)
-    imagem_segmentada = label2rgb(segmentos, imagem, kind='avg')
-    
-    # Retorna imagem PIL
-    return Image.fromarray((imagem_segmentada * 255).astype(np.uint8)), segmentos
+def aplicar_slic(imagem_np):
+    # Número fixo de segmentos
+    num_segmentos = 150
+
+    # Segmentação usando SLIC
+    segmentos = slic(imagem_np, n_segments=num_segmentos, compactness=10, sigma=1, start_label=1)
+
+    # Mapeia os rótulos dos segmentos de volta para cores médias
+    imagem_segmentada = label2rgb(segmentos, imagem_np, kind='avg')
+
+    # Converte para uint8 (imagem visualizável)
+    return img_as_ubyte(imagem_segmentada)

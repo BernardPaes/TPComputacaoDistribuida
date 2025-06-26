@@ -1,37 +1,42 @@
 import socket
 import pickle
-import sys
 import os
+import struct
 
-def enviar_imagem(caminho_imagem, host_servidor, porta):
-    """Envia uma imagem para o servidor central via socket."""
-    if not os.path.exists(caminho_imagem):
-        print(f"[Cliente] Arquivo '{caminho_imagem}' não encontrado.")
-        return
+SERVER_HOST = 'localhost'
+SERVER_PORT = 8000
 
-    nome_imagem = os.path.basename(caminho_imagem)
+def enviar_com_cabecalho(sock, payload):
+    dados_serializados = pickle.dumps(payload)
+    tamanho = struct.pack('>I', len(dados_serializados))
+    sock.sendall(tamanho + dados_serializados)
 
-    with open(caminho_imagem, "rb") as f:
-        dados_imagem = f.read()
-
-    pacote = {
-        "nome": nome_imagem,
-        "dados": dados_imagem
-    }
-
+def enviar_para_servidor(nome_arquivo, caminho_completo):
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((host_servidor, int(porta)))
-            s.sendall(pickle.dumps(pacote))
-            print(f"[Cliente] Imagem '{nome_imagem}' enviada com sucesso para {host_servidor}:{porta}")
+        with open(caminho_completo, 'rb') as f:
+            imagem_binaria = f.read()
+
+        dados = {
+            'nome': nome_arquivo,
+            'dados': imagem_binaria
+        }
+
+        with socket.create_connection((SERVER_HOST, SERVER_PORT), timeout=10) as s:
+            enviar_com_cabecalho(s, dados)
+            print(f"[Cliente] Imagem '{nome_arquivo}' enviada com sucesso.")
     except Exception as e:
-        print(f"[Cliente] Erro ao enviar imagem: {e}")
+        print(f"[Cliente] Erro ao enviar '{nome_arquivo}': {e}")
+
+def enviar_varias_imagens(pasta_imagens):
+    for nome_arquivo in os.listdir(pasta_imagens):
+        if nome_arquivo.lower().endswith(('.png', '.jpg', '.jpeg')):
+            caminho_completo = os.path.join(pasta_imagens, nome_arquivo)
+            enviar_para_servidor(nome_arquivo, caminho_completo)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Uso: python client.py <caminho_imagem> <host_servidor> <porta>")
+    pasta = 'static/uploads'
+    if os.path.exists(pasta):
+        enviar_varias_imagens(pasta)
     else:
-        caminho_imagem = sys.argv[1]
-        host = sys.argv[2]
-        porta = sys.argv[3]
-        enviar_imagem(caminho_imagem, host, porta)
+        print(f"[Cliente] Pasta '{pasta}' não encontrada.")
+
